@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Mdluex TV Player</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+  #p { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+  #p iframe { width: 100%; height: 100%; border: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="p"></div>
+<script>
+/*
+  Mdluex TV Player - hosts the YouTube player on a real web address so YouTube allows playback
+  (YouTube rejects players embedded straight into TV apps: error 153).
+
+  URL parameters:
+    v       YouTube video id (required)
+    start   start position in seconds
+    mode    "full" (with sound, app-controlled) or "preview" (muted, loops)
+    random  1 = in preview, jump to a random moment every 8 seconds
+
+  Messages to the parent app (JSON strings, src "mdx-yt"):
+    {ev:"ready"} {ev:"state", state} {ev:"time", t, d} {ev:"ended"} {ev:"error", code}
+  Commands accepted from the parent (JSON strings):
+    {cmd:"play"} {cmd:"pause"} {cmd:"toggle"} {cmd:"seek", t:seconds} {cmd:"mute"} {cmd:"unmute"}
+*/
+(function () {
+  var q = {};
+  location.search.slice(1).split('&').forEach(function (kv) {
+    if (!kv) return;
+    var i = kv.indexOf('=');
+    q[decodeURIComponent(i < 0 ? kv : kv.slice(0, i))] = i < 0 ? '' : decodeURIComponent(kv.slice(i + 1));
+  });
+  var vid = /^[\w-]{11}$/.test(q.v || '') ? q.v : null;
+  var preview = q.mode === 'preview';
+  var random = q.random === '1';
+  var start = Math.max(0, parseInt(q.start || '0', 10) || 0);
+  var player = null, tick = null, jumper = null;
+
+  function send(o) {
+    o.src = 'mdx-yt';
+    try { window.parent.postMessage(JSON.stringify(o), '*'); } catch (e) {}
+  }
+  if (!vid) { send({ ev: 'error', code: 'bad-id' }); return; }
+
+  function jump() {
+    try { var d = player.getDuration(); if (d > 25) player.seekTo(d * (0.1 + Math.random() * 0.75), true); } catch (e) {}
+  }
+
+  window.onYouTubeIframeAPIReady = function () {
+    player = new YT.Player('p', {
+      width: '100%', height: '100%', videoId: vid,
+      playerVars: {
+        autoplay: 1, mute: preview ? 1 : 0, controls: 0, rel: 0, modestbranding: 1, playsinline: 1,
+        fs: 0, iv_load_policy: 3, disablekb: 1, start: start, origin: location.origin
+      },
+      events: {
+        onReady: function () {
+          if (preview) player.mute();
+          player.playVideo();
+          send({ ev: 'ready' });
+          clearInterval(tick);
+          tick = setInterval(function () {
+            try { send({ ev: 'time', t: player.getCurrentTime(), d: player.getDuration() }); } catch (e) {}
+          }, 500);
+        },
+        onStateChange: function (e) {
+          send({ ev: 'state', state: e.data });
+          if (e.data === 1 && preview && random && !jumper) { jump(); jumper = setInterval(jump, 8000); }
+          if (e.data === 0) {
+            if (preview) { if (random) jump(); else player.seekTo(0, true); player.playVideo(); }
+            else send({ ev: 'ended' });
+          }
+        },
+        onError: function (e) { send({ ev: 'error', code: e.data }); }
+      }
+    });
+  };
+
+  window.addEventListener('message', function (e) {
+    var m;
+    try { m = typeof e.data === 'string' ? JSON.parse(e.data) : e.data; } catch (x) { return; }
+    if (!m || !m.cmd || !player || !player.getPlayerState) return;
+    switch (m.cmd) {
+      case 'play': player.playVideo(); break;
+      case 'pause': player.pauseVideo(); break;
+      case 'toggle': if (player.getPlayerState() === 1) player.pauseVideo(); else player.playVideo(); break;
+      case 'seek': if (typeof m.t === 'number') player.seekTo(Math.max(0, m.t), true); break;
+      case 'mute': player.mute(); break;
+      case 'unmute': player.unMute(); break;
+    }
+  });
+
+  var s = document.createElement('script');
+  s.src = 'https://www.youtube.com/iframe_api';
+  s.onerror = function () { send({ ev: 'error', code: 'api-load' }); };
+  document.head.appendChild(s);
+})();
+</script>
+</body>
+</html>
