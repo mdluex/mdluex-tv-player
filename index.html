@@ -33,6 +33,7 @@
     {ev:"ready"} {ev:"state", state} {ev:"time", t, d} {ev:"ended"} {ev:"error", code}
   Commands accepted from the parent (JSON strings):
     {cmd:"play"} {cmd:"pause"} {cmd:"toggle"} {cmd:"seek", t:seconds} {cmd:"mute"} {cmd:"unmute"}
+    {cmd:"rate", r:1.5}  {cmd:"captions", lang:"ar"|null}  {cmd:"info"} -> {ev:"info", rates, rate, tracks, captions}
 */
 (function () {
   var q = {};
@@ -55,6 +56,21 @@
   }
   if (!vid) { send({ ev: 'error', code: 'bad-id' }); return; }
 
+  // subtitles: list what the video offers (module must be loaded once to read the list)
+  var tracks = [], captionsLang = null;
+  function readTracks() {
+    try {
+      var list = player.getOption('captions', 'tracklist') || [];
+      if (list.length) tracks = list.map(function (t) { return { code: t.languageCode, name: t.displayName || t.languageName || t.languageCode }; });
+    } catch (e) {}
+  }
+  function sendInfo() {
+    readTracks();
+    var rates = [1];
+    try { rates = player.getAvailablePlaybackRates() || [1]; } catch (e) {}
+    send({ ev: 'info', rates: rates, rate: player.getPlaybackRate ? player.getPlaybackRate() : 1, tracks: tracks, captions: captionsLang });
+  }
+
   function jump() {
     try { var d = player.getDuration(); if (d > 25) player.seekTo(d * (0.1 + Math.random() * 0.75), true); } catch (e) {}
   }
@@ -71,6 +87,14 @@
           if (preview) player.mute();
           if (quality) { try { player.setPlaybackQuality(quality); } catch (e) {} }
           player.playVideo();
+          if (!preview) {
+            // load the captions module briefly to learn which subtitle languages exist, then hide them
+            try { player.loadModule('captions'); } catch (e) {}
+            setTimeout(function () {
+              readTracks();
+              if (!captionsLang) { try { player.setOption('captions', 'track', {}); player.unloadModule('captions'); } catch (e) {} }
+            }, 2500);
+          }
           send({ ev: 'ready' });
           clearInterval(tick);
           tick = setInterval(function () {
@@ -101,6 +125,12 @@
       case 'seek': if (typeof m.t === 'number') player.seekTo(Math.max(0, m.t), true); break;
       case 'mute': player.mute(); break;
       case 'unmute': player.unMute(); break;
+      case 'rate': if (typeof m.r === 'number') player.setPlaybackRate(m.r); break;
+      case 'captions':
+        if (m.lang) { player.loadModule('captions'); player.setOption('captions', 'track', { languageCode: m.lang }); captionsLang = m.lang; }
+        else { try { player.setOption('captions', 'track', {}); player.unloadModule('captions'); } catch (x) {} captionsLang = null; }
+        break;
+      case 'info': sendInfo(); break;
     }
   });
 
